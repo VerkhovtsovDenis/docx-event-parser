@@ -19,7 +19,7 @@ def create(output_xlsx: str, output_json: str) -> None:
     """
     Создает пустые файлы output.xlsx и output.json.
     """
-    df = pd.DataFrame(columns=['Filename', 'Status'])
+    df = pd.DataFrame(columns=['Filename', 'Status', 'Document Type'])
     df.to_excel(output_xlsx, index=False)
     with open(output_json, 'w', encoding='utf-8') as json_file:
         json.dump({}, json_file, ensure_ascii=False, indent=4)
@@ -28,9 +28,6 @@ def create(output_xlsx: str, output_json: str) -> None:
 def find_docx_files(directory: str) -> List[str]:
     """
     Рекурсивно ищет все .docx файлы в указанной папке и подпапках.
-
-    :param directory: Путь к корневой папке.
-    :return: Список путей к файлам .docx.
     """
     docx_files = []
     for root, _, files in os.walk(directory):
@@ -40,14 +37,23 @@ def find_docx_files(directory: str) -> List[str]:
     return docx_files
 
 
-def parse_first_page_tables(doc_path: str) -> Dict[str, Any]:
+def determine_document_type(doc: Document) -> str:
+    """
+    Определяет, является ли документ новым или старым по его структуре.
+    """
+    tables = doc.tables
+    if len(tables) >= 3 and ("Название мероприятия"
+                             in tables[0].rows[0].cells[0].text):
+        return "new"
+    return "old"
+
+
+def parse_first_page_tables(doc_path: str) -> Tuple[Dict[str, Any], str]:
     """
     Извлекает данные из первых трех таблиц первой страницы документа .docx.
-
-    :param doc_path: Путь к .docx файлу.
-    :return: Словарь с ключами, соответствующими полям json-результата.
     """
     doc = Document(doc_path)
+    doc_type = determine_document_type(doc)
     tables = doc.tables[:3]  # Берем только первые три таблицы
 
     extracted_data = {
@@ -67,33 +73,49 @@ def parse_first_page_tables(doc_path: str) -> Dict[str, Any]:
     }
 
     try:
-        if len(tables) >= 3:
-            extracted_data['Event name'] = tables[0].rows[0].cells[1].text.strip()
-            extracted_data['Department'] = tables[0].rows[1].cells[1].text.strip()
-            extracted_data['Date of event'] = tables[0].rows[2].cells[1].text.strip()
-            extracted_data['Date of installation'] = tables[0].rows[3].cells[1].text.strip()
-            extracted_data['Order'] = tables[0].rows[4].cells[1].text.strip()
-            extracted_data['Participants'] = tables[0].rows[5].cells[1].text.strip()
-            extracted_data['Responsible'] = tables[0].rows[6].cells[1].text.strip()
-            extracted_data['Event format'] = tables[1].rows[0].cells[1].text.strip()
-            extracted_data['Guests of honor'] = tables[1].rows[1].cells[1].text.strip()
-            extracted_data['Event level'] = tables[1].rows[2].cells[1].text.strip()
-            extracted_data['Schedule'] = tables[1].rows[3].cells[1].text.strip()
-            extracted_data['Necessary technical equipment'] = tables[2].rows[0].cells[1].text.strip()
-            extracted_data['Training on working with audio equipment'] = tables[2].rows[1].cells[1].text.strip()
-    except IndexError:
-        pass  # В случае проблем с доступом к ячейкам оставляем пустые значения
+        if doc_type == "new" and len(tables) >= 3:
+            for key, row, col in [
+                ('Event name', 0, 1),
+                ('Department', 1, 1),
+                ('Date of event', 2, 1),
+                ('Date of installation', 3, 1),
+                ('Order', 4, 1),
+                ('Participants', 5, 1),
+                ('Responsible', 6, 1),
+                ('Event format', 7, 1),
+                ('Guests of honor', 8, 1),
+                ('Event level', 9, 1),
+                ('Schedule', 10, 1),
+                ('Necessary technical equipment', 14, 1),
+                ('Training on working with audio equipment', 15, 1)
+            ]:
+                extracted_data[key] = tables[row // 7].rows[row % 7].\
+                    cells[col].text.strip()
+        elif doc_type == "old":
+            for key, row, col in [
+                ('Event name', 4, 2),
+                ('Department', 0, 2),
+                ('Date of event', 1, 2),
+                ('Event format', 2, 2),
+                ('Participants', 3, 2),
+                ('Schedule', 4, 2)
+            ]:
+                extracted_data[key] = tables[row // 6].rows[row % 6].\
+                    cells[col].text.strip()
+                extracted_data['Necessary technical equipment'] = (
+                    tables[0].rows[8].cells[2].text.strip() + ', ' +
+                    tables[0].rows[5].cells[2].text.strip()
+                )
 
-    return extracted_data
+    except Exception as e:
+        print(f'error with {doc_path} file: {str(e)}')
+
+    return extracted_data, doc_type
 
 
 def process_files(input_dir: str, output_xlsx: str, output_json: str) -> None:
     """
     Обрабатывает все .docx файлы в папке, создавая итоговые xlsx и json файлы.
-
-    :param input_dir: Папка, где находятся .docx файлы.
-    :param output_xlsx: Путь к выходному .xlsx файлу.
-    :param output_json: Путь к выходному .json файлу.
     """
     docx_files = find_docx_files(input_dir)
     results = {}
@@ -101,27 +123,30 @@ def process_files(input_dir: str, output_xlsx: str, output_json: str) -> None:
 
     for file in docx_files:
         try:
-            parsed_data = parse_first_page_tables(file)
+            parsed_data, doc_type = parse_first_page_tables(file)
             results[os.path.basename(file)] = parsed_data
-            processing_status.append({'Filename': os.path.basename(file), 'Status': 'Processed'})
-            print(f"{os.path.basename(file)} - OK")
+            processing_status.append({
+                'Filename': os.path.basename(file),
+                'Status': 'Processed',
+                'Document Type': doc_type
+            })
+            print(f"{os.path.basename(file)} - OK ({doc_type})")
         except Exception as e:
-            processing_status.append({'Filename': os.path.basename(file), 'Status': f'Error: {str(e)}'})
+            processing_status.append({
+                'Filename': os.path.basename(file),
+                'Status': f'Error: {str(e)}',
+                'Document Type': 'Unknown'
+            })
             print(f"{os.path.basename(file)} - ERROR: {str(e)}")
 
-    # Сохранение данных в JSON
     with open(output_json, 'w', encoding='utf-8') as json_file:
         json.dump(results, json_file, ensure_ascii=False, indent=4)
 
-    # Сохранение статусов в XLSX
     df = pd.DataFrame(processing_status)
     df.to_excel(output_xlsx, index=False)
 
 
 def main() -> None:
-    """
-    Главная функция, запускающая процесс обработки файлов .docx.
-    """
     input_directory = "inputs"
     output_xlsx_path = "output.xlsx"
     output_json_path = "output.json"
