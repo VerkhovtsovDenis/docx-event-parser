@@ -1,7 +1,9 @@
-import os
 import json
+import os
+from typing import Any, Dict, List, Tuple
+
 import pandas as pd
-from typing import Dict, List, Tuple, Any
+
 from docx import Document
 
 

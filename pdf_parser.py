@@ -1,11 +1,13 @@
-import os
 import json
-import pandas as pd
-from typing import Dict, List, Tuple, Any
-from docx import Document
-import pdfplumber
+import os
 import pprint
+from typing import Any, Dict, List, Tuple
+
+import pandas as pd
+import pdfplumber
 import xlsxwriter
+
+from docx import Document
 
 
 def clear(output_xlsx: str, output_json: str) -> None:
