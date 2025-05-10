@@ -8,43 +8,60 @@ from parsers.pdf_parser import PDFParser
 from utils.file_utils import clear_output_files, find_files
 
 
-def save_to_excel(data: Dict[str, Dict[str, Any]], filename: str) -> None:
-    """Сохраняет данные в Excel файл"""
-    if not data:
-        print("Нет данных для сохранения в Excel")
+def process_files(
+    pdf_parser: PDFParser, docx_parser: DocxParser, files: list, file_type: str
+) -> Dict[str, Any]:
+    """Обрабатывает файлы указанного типа и возвращает результаты"""
+    results = {}
+    for file in files:
+        try:
+            if file_type == "pdf":
+                data, doc_type = pdf_parser.parse(file)
+            else:
+                data, doc_type = docx_parser.parse(file)
+
+            if data:
+                results[os.path.basename(file)] = data
+                print(f"Обработан {file_type.upper()}: {file} ({doc_type})")
+        except Exception as e:
+            print(f"Ошибка при обработке {file_type.upper()} {file}: {str(e)}")
+    return results
+
+
+def save_results(
+    results: Dict[str, Any], output_xlsx: str, output_json: str
+) -> None:
+    """Сохраняет результаты в файлы"""
+    if not results:
+        print("Нет данных для сохранения")
         return
 
-    # Убедимся, что filename имеет правильное расширение
-    if not filename.endswith(".xlsx"):
-        filename = os.path.splitext(filename)[0] + ".xlsx"
+    # Подготовка данных для Excel
+    excel_data = []
+    for filename, fields in results.items():
+        row = {
+            "Filename": filename,
+            "File Type": fields.get("doc_type", "unknown"),
+        }
+        row.update({k: v for k, v in fields.items() if k != "doc_type"})
+        excel_data.append(row)
 
-    # Преобразуем данные в DataFrame
-    df_data = []
-    for filename_key, fields in data.items():
-        row = {"Filename": filename_key}
-        row.update(fields)
-        df_data.append(row)
+    # Сохранение в Excel
+    df = pd.DataFrame(excel_data)
+    df.to_excel(output_xlsx, index=False, engine="openpyxl")
 
-    df = pd.DataFrame(df_data)
+    # Сохранение в JSON
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=4)
 
-    # Сохраняем с указанием движка (engine='openpyxl')
-    df.to_excel(filename, index=False, engine="openpyxl")
-
-
-def save_to_json(data: Dict[str, Dict[str, Any]], filename: str) -> None:
-    """Сохраняет данные в JSON файл"""
-    if not filename.endswith(".json"):
-        filename = os.path.splitext(filename)[0] + ".json"
-
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    print(f"Результаты сохранены в {output_xlsx} и {output_json}")
 
 
 def main():
     # Конфигурация путей
     input_dir = "inputs"
-    output_xlsx = "output.xlsx"  # Важно: должно быть .xlsx
-    output_json = "output.json"  # Важно: должно быть .json
+    output_xlsx = "output.xlsx"
+    output_json = "output.json"
 
     # Очистка предыдущих результатов
     clear_output_files(output_xlsx, output_json)
@@ -55,35 +72,16 @@ def main():
 
     # Поиск файлов
     docx_files, pdf_files = find_files(input_dir)
-    results = {}
 
-    # Обработка PDF файлов
-    for pdf_file in pdf_files:
-        try:
-            data, doc_type = pdf_parser.parse(pdf_file)
-            if data:  # Добавляем только если есть данные
-                results[os.path.basename(pdf_file)] = data
-                print(f"Обработан PDF: {pdf_file} ({doc_type})")
-        except Exception as e:
-            print(f"Ошибка при обработке PDF {pdf_file}: {str(e)}")
+    # Обработка файлов
+    pdf_results = process_files(pdf_parser, docx_parser, pdf_files, "pdf")
+    docx_results = process_files(pdf_parser, docx_parser, docx_files, "docx")
 
-    # Обработка DOCX файлов
-    for docx_file in docx_files:
-        try:
-            data, doc_type = docx_parser.parse(docx_file)
-            if data:  # Добавляем только если есть данные
-                results[os.path.basename(docx_file)] = data
-                print(f"Обработан DOCX: {docx_file} ({doc_type})")
-        except Exception as e:
-            print(f"Ошибка при обработке DOCX {docx_file}: {str(e)}")
+    # Объединение результатов
+    all_results = {**pdf_results, **docx_results}
 
     # Сохранение результатов
-    if results:
-        save_to_json(results, output_json)
-        save_to_excel(results, output_xlsx)
-        print(f"Результаты сохранены в {output_json} и {output_xlsx}")
-    else:
-        print("Нет данных для сохранения")
+    save_results(all_results, output_xlsx, output_json)
 
 
 if __name__ == "__main__":

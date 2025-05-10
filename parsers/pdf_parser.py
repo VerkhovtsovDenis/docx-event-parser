@@ -11,16 +11,21 @@ def parse_old_pdf_format(text: str) -> Dict[str, Any]:
     """Парсинг старых PDF-файлов с нумерованными пунктами"""
     result = {
         "Event name": "",
-        "Department": "",
+        "Department": "Молодежный коворкинг А11",  # По умолчанию
         "Date of event": "",
+        "Date of installation": "",
+        "Order": "",
         "Participants": "",
         "Responsible": "",
         "Event format": "",
+        "Guests of honor": "",
+        "Event level": "",
+        "Schedule": "",
         "Necessary technical equipment": "",
         "Training on working with audio equipment": "",
     }
 
-    # Словарь соответствия номеров пунктов полям
+    # Полный маппинг всех полей старого формата
     field_mapping = {
         "1": ("Responsible", "Заявитель (ФИО)"),
         "2": ("Date of event", "Дата и время бронирования"),
@@ -33,7 +38,13 @@ def parse_old_pdf_format(text: str) -> Dict[str, Any]:
             "Training on working with audio equipment",
             "Обучение работе с техникой",
         ),
+        "8": (
+            "Event level",
+            "Требования к посадке участников",
+        ),  # Используем для уровня
         "9.1": ("Responsible", "Ответственный организатор (ФИО)"),
+        "9.2": ("Responsible_phone", "Номер телефона"),
+        "9.3": ("Additional_requirements", "Дополнительные требования"),
     }
 
     # Разбиваем текст на строки
@@ -43,46 +54,41 @@ def parse_old_pdf_format(text: str) -> Dict[str, Any]:
     collected_data = {}
 
     for line in lines:
-        # Проверяем, начинается ли строка с номера пункта
-        parts = line.split(maxsplit=2)
-        if len(parts) >= 2 and parts[0].replace(".", "").isdigit():
-            point_num = parts[0]
-            if point_num in field_mapping:
-                field, field_name = field_mapping[point_num]
-                value = parts[2] if len(parts) > 2 else ""
-                collected_data[field] = value.strip()
-                current_field = field
-        elif current_field:
-            # Продолжение предыдущего пункта
-            if collected_data.get(current_field):
-                collected_data[current_field] += " " + line
-            else:
-                collected_data[current_field] = line
+        # Ищем строки с номером пункта (|1|, |2| и т.д.)
+        if line.startswith("|") and "|" in line[1:]:
+            parts = [p.strip() for p in line.split("|") if p.strip()]
+            if len(parts) >= 3:
+                point_num = parts[0]
+                if point_num in field_mapping:
+                    field, _ = field_mapping[point_num]
+                    collected_data[field] = parts[2]
+                    current_field = field
 
-    # Объединяем данные из нескольких связанных полей
-    if "Necessary technical equipment" in collected_data:
-        tech_equip = []
-        for subpoint in ["6.1", "6.2"]:
-            if subpoint in field_mapping:
-                field = field_mapping[subpoint][0]
-                if collected_data.get(field):
-                    tech_equip.append(collected_data[field])
-        result["Necessary technical equipment"] = ", ".join(
-            filter(None, tech_equip)
-        )
+    # Специальная обработка для технического оборудования
+    tech_equipment = []
+    if "6.1" in field_mapping and field_mapping["6.1"][0] in collected_data:
+        tech_equipment.append(collected_data[field_mapping["6.1"][0]])
+    if "6.2" in field_mapping and field_mapping["6.2"][0] in collected_data:
+        tech_equipment.append(collected_data[field_mapping["6.2"][0]])
+    if tech_equipment:
+        result["Necessary technical equipment"] = ", ".join(tech_equipment)
 
-    if "6.3" in field_mapping:
-        field = field_mapping["6.3"][0]
-        result[field] = collected_data.get(field, "")
-
-    # Заполняем основные поля
+    # Переносим все собранные данные в результат
     for field in result:
         if field in collected_data:
-            if field == "Responsible" and result[field]:
-                # Объединяем данные из пунктов 1 и 9.1
-                result[field] += " / " + collected_data[field]
-            else:
-                result[field] = collected_data.get(field, "")
+            result[field] = collected_data[field]
+
+    # Особые случаи:
+    if "Responsible_phone" in collected_data:
+        result[
+            "Responsible"
+        ] += f" (тел.: {collected_data['Responsible_phone']})"
+
+    if "Additional_requirements" in collected_data:
+        if collected_data["Additional_requirements"] not in ["-", ""]:
+            result[
+                "Event format"
+            ] += f". Доп.требования: {collected_data['Additional_requirements']}"
 
     return result
 
@@ -97,20 +103,58 @@ class PDFParser(BaseParser):
                 first_page = pdf.pages[0]
                 text = first_page.extract_text()
 
-                # Проверяем, является ли это старым форматом
-                if any(
-                    line.strip().startswith("|1|") for line in text.split("\n")
-                ):
+                # Улучшенное определение старого формата
+                if self._is_old_format(text):
                     return parse_old_pdf_format(text), "old_pdf_format"
 
+                # Пробуем распарсить как таблицы
                 tables = first_page.extract_tables()
-                if tables:
+                if tables and self._validate_tables(tables):
                     return self._parse_tables(tables), "pdf_table"
+
+                # Если не распознано как таблицы, пробуем текст
                 return self._parse_text(text), "pdf_text"
 
         except Exception as e:
             print(f"PDF parsing error: {str(e)}")
             return {}, "error"
+
+    def _is_old_format(self, text: str) -> bool:
+        """Определяет, является ли PDF старым форматом"""
+        if not text:
+            return False
+
+        # Проверяем несколько характерных признаков старого формата
+        lines = text.split("\n")
+        
+        old_format_indicators = [
+            any(line.strip().startswith("9.3") for line in lines)
+            for i in range(1, 6)
+        ]
+
+        # Должны быть хотя бы 3 совпадения из 5 возможных
+        return sum(old_format_indicators) >= 3
+
+    def _validate_tables(self, tables: list) -> bool:
+        """Проверяет, что таблицы соответствуют новому формату"""
+        if not tables or len(tables) < 1:
+            return False
+
+        # Проверяем первую таблицу на наличие характерных заголовков
+        first_table = tables[0]
+        if len(first_table) < 1 or len(first_table[0]) < 2:
+            return False
+
+        # Ищем хотя бы один известный заголовок
+        known_headers = [
+            "Название мероприятия",
+            "Организатор",
+            "Даты проведения",
+        ]
+        return any(
+            any(header in str(cell) for cell in first_table[0])
+            for header in known_headers
+        )
 
     def _parse_tables(self, tables: list) -> Dict[str, Any]:
         """
