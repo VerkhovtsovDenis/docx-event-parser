@@ -126,7 +126,8 @@ class PDFParser(BaseParser):
 
         # Проверяем несколько характерных признаков старого формата
         lines = text.split("\n")
-        
+
+        # FIXME - не работает, некорректно считывает информацию со старых файлов 
         old_format_indicators = [
             any(line.strip().startswith("9.3") for line in lines)
             for i in range(1, 6)
